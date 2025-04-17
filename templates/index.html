@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>NSE Stock Price Prediction</title>
+</head>
+<body>
+  <h1>📈 NSE Stock Predictor</h1>
+  <form id="predictForm">
+    <input type="text" id="ticker" placeholder="Enter Ticker (e.g. RELIANCE)" required />
+    <button type="submit">Predict</button>
+  </form>
+  <h2 id="result"></h2>
+
+  <script>
+    document.getElementById("predictForm").addEventListener("submit", async function(e) {
+      e.preventDefault();
+      const ticker = document.getElementById("ticker").value;
+      const response = await fetch(`/predict/${ticker}`);
+      const data = await response.json();
+      document.getElementById("result").innerText = `Predicted Price: ₹${data.predicted_price}`;
+    });
+  </script>
+</body>
+</html>
