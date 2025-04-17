@@ -21,7 +21,6 @@ import ta
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import uvicorn
 
@@ -40,8 +39,10 @@ app.add_middleware(
 )
 
 BASE_DIR = Path(__file__).resolve().parent
-app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
-templates = Jinja2Templates(directory=BASE_DIR / "templates")
+TEMPLATES_DIR = BASE_DIR / "templates"
+TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)  # Ensure it exists
+
+templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
 # LSTM Model Definition
 class StockPriceLSTM(nn.Module):
@@ -107,6 +108,34 @@ def train_model(model, train_loader, epochs: int = 50, lr: float = 0.001):
 # Root Route for HTML UI
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
+    html_path = TEMPLATES_DIR / "index.html"
+    if not html_path.exists():
+        html_path.write_text("""
+<!DOCTYPE html>
+<html>
+<head>
+  <title>NSE Stock Price Prediction</title>
+</head>
+<body>
+  <h1>📈 NSE Stock Predictor</h1>
+  <form id=\"predictForm\">
+    <input type=\"text\" id=\"ticker\" placeholder=\"Enter Ticker (e.g. RELIANCE)\" required />
+    <button type=\"submit\">Predict</button>
+  </form>
+  <h2 id=\"result\"></h2>
+
+  <script>
+    document.getElementById(\"predictForm\").addEventListener(\"submit\", async function(e) {
+      e.preventDefault();
+      const ticker = document.getElementById(\"ticker\").value;
+      const response = await fetch(`/predict/${ticker}`);
+      const data = await response.json();
+      document.getElementById(\"result\").innerText = `Predicted Price: ₹${data.predicted_price}`;
+    });
+  </script>
+</body>
+</html>
+""")
     return templates.TemplateResponse("index.html", {"request": request})
 
 # API Endpoint
