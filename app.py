@@ -1,26 +1,28 @@
-# Stock Price Prediction Model for Indian Market (NSE/BSE) with LSTM, XGBoost, Streamlit Dashboard, and Backtesting
+# app.py — FastAPI App with HTML UI for NSE Stock Prediction
 
 import numpy as np
 import pandas as pd
 import os
-import requests
 import logging
 from datetime import datetime
 from typing import Tuple
+from pathlib import Path
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error
-from sklearn.ensemble import RandomForestRegressor
-from xgboost import XGBRegressor
+
 import yfinance as yf
-import ta  # Technical indicators
-import streamlit as st
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+import ta
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 import uvicorn
 
 # Logging setup
@@ -36,6 +38,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+BASE_DIR = Path(__file__).resolve().parent
+app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
+templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 # LSTM Model Definition
 class StockPriceLSTM(nn.Module):
@@ -98,50 +104,10 @@ def train_model(model, train_loader, epochs: int = 50, lr: float = 0.001):
     torch.save(model.state_dict(), "nse_lstm_model.pth")
     logger.info("Model saved")
 
-# Evaluation Metrics
-
-def evaluate_model(model, X_test, y_test, scaler):
-    model.eval()
-    with torch.no_grad():
-        predictions = model(X_test).numpy()
-    actual = y_test.numpy()
-    rmse = np.sqrt(mean_squared_error(actual, predictions))
-    mae = mean_absolute_error(actual, predictions)
-    direction_accuracy = np.mean(np.sign(actual[1:] - actual[:-1]) == np.sign(predictions[1:] - predictions[:-1]))
-    return rmse, mae, direction_accuracy
-
-# XGBoost Comparison
-
-def xgboost_model(data: pd.DataFrame):
-    features = data[['Adj Close', 'Volume', 'Return', 'RSI', 'MACD', 'BB_upper', 'BB_lower']]
-    targets = features['Adj Close'].shift(-1).dropna()
-    features = features.iloc[:-1]
-    model = XGBRegressor(objective='reg:squarederror')
-    model.fit(features, targets)
-    predictions = model.predict(features)
-    return predictions, targets
-
-# Backtesting Strategy
-
-def backtest(predictions, actuals):
-    signals = np.where(predictions > actuals, 1, -1)
-    daily_returns = np.diff(actuals) / actuals[:-1]
-    strategy_returns = signals[:-1] * daily_returns
-    cumulative_return = np.cumprod(1 + strategy_returns)[-1]
-    return cumulative_return
-
-# Streamlit Dashboard
-
-def streamlit_dashboard():
-    st.title("📈 Indian Stock Price Prediction Dashboard")
-    ticker = st.text_input("Enter NSE Ticker (e.g. RELIANCE)", value="RELIANCE")
-    if st.button("Predict and Visualize"):
-        ticker += ".NS" if not ticker.endswith(".NS") else ""
-        df = download_stock_data(ticker, "2020-01-01", datetime.today().strftime('%Y-%m-%d"))
-        predictions, targets = xgboost_model(df)
-        cumulative = backtest(predictions, targets.values)
-        st.line_chart({"Actual": targets.values, "Predicted": predictions})
-        st.success(f"📊 Cumulative return of strategy: {cumulative:.2f}x")
+# Root Route for HTML UI
+@app.get("/", response_class=HTMLResponse)
+async def home(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
 
 # API Endpoint
 @app.get("/predict/{ticker}")
@@ -160,7 +126,7 @@ async def predict_price(ticker: str):
         with torch.no_grad():
             prediction = model(X_input).item()
         predicted_price = scaler.inverse_transform([[prediction] + [0]*6])[0, 0]
-        return JSONResponse(content={"ticker": ticker, "predicted_price": round(predicted_price, 2)})
+        return JSONResponse(content={"ticker": ticker.upper(), "predicted_price": round(predicted_price, 2)})
 
     except Exception as e:
         logger.error(f"Prediction error: {e}")
@@ -177,9 +143,4 @@ if __name__ == "__main__":
     model = StockPriceLSTM(input_size=7, hidden_size=64, num_layers=2)
     train_model(model, loader)
 
-    rmse, mae, da = evaluate_model(model, X, y, scaler)
-    logger.info(f"Model Evaluation — RMSE: {rmse:.2f}, MAE: {mae:.2f}, Directional Accuracy: {da:.2%}")
-
-    # Launch FastAPI and Streamlit (as separate processes if desired)
     uvicorn.run(app, host="0.0.0.0", port=8000)
-    # To run dashboard separately: streamlit run <filename>.py
