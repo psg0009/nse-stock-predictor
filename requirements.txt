@@ -1,0 +1,11 @@
+numpy
+pandas
+torch
+scikit-learn
+xgboost
+ta
+yfinance
+streamlit
+fastapi
+uvicorn
+requests
