@@ -1,4 +1,4 @@
-# app.py — Complete NSE Stock Prediction App with Date Range, Chart, CSV, and UI
+# app.py — Complete NSE Stock Prediction App with Date Range, Chart, CSV, UI, Backtest, and Accuracy
 
 import os
 import json
@@ -65,12 +65,17 @@ def download_stock_data(ticker: str, start: str, end: str) -> pd.DataFrame:
     bb = ta.volatility.BollingerBands(df['Adj Close'])
     df['BB_upper'] = bb.bollinger_hband()
     df['BB_lower'] = bb.bollinger_lband()
+    df['MA20'] = ta.trend.SMAIndicator(df['Adj Close'], window=20).sma_indicator()
+    df['MA50'] = ta.trend.SMAIndicator(df['Adj Close'], window=50).sma_indicator()
+    df['Close_lag_1'] = df['Adj Close'].shift(1)
+    df['Close_lag_3'] = df['Adj Close'].shift(3)
+    df['Close_lag_5'] = df['Adj Close'].shift(5)
     df.dropna(inplace=True)
     return df
 
 def prepare_data(data: pd.DataFrame, lookback: int = 10) -> Tuple[torch.Tensor, torch.Tensor, MinMaxScaler]:
     scaler = MinMaxScaler()
-    features = data[['Adj Close', 'Volume', 'Return', 'RSI', 'MACD', 'BB_upper', 'BB_lower']].values
+    features = data[['Adj Close', 'Volume', 'Return', 'RSI', 'MACD', 'BB_upper', 'BB_lower', 'MA20', 'MA50', 'Close_lag_1', 'Close_lag_3', 'Close_lag_5']].values
     scaled = scaler.fit_transform(features)
     X, y = [], []
     for i in range(lookback, len(scaled)):
@@ -100,6 +105,22 @@ def save_prediction(ticker: str, price: float):
         f.seek(0)
         json.dump(history, f, indent=2)
 
+def compute_directional_accuracy(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    return float(np.mean((np.sign(y_pred[1:] - y_pred[:-1]) == np.sign(y_true[1:] - y_true[:-1])).astype(int)))
+
+def backtest_strategy(y_true: np.ndarray, y_pred: np.ndarray, capital: float = 10000.0, cost: float = 0.001) -> float:
+    shares = 0
+    cash = capital
+    for i in range(1, len(y_pred)):
+        if y_pred[i] > y_true[i-1] and shares == 0:
+            shares = cash / y_true[i-1]
+            cash -= cash * cost
+        elif y_pred[i] < y_true[i-1] and shares > 0:
+            cash = shares * y_true[i-1]
+            cash -= cash * cost
+            shares = 0
+    return round(cash + shares * y_true[-1], 2)
+
 # Route
 @app.post("/predict", response_class=HTMLResponse)
 async def predict_submit(request: Request, ticker: str = Form(...), start: str = Form(...), end: str = Form(...)):
@@ -107,12 +128,17 @@ async def predict_submit(request: Request, ticker: str = Form(...), start: str =
         full_ticker = ticker if ticker.endswith(".NS") else f"{ticker}.NS"
         data = download_stock_data(full_ticker, start, end)
         X, y, scaler = prepare_data(data)
-        model = StockPriceLSTM(input_size=7, hidden_size=64, num_layers=2)
+        model = StockPriceLSTM(input_size=X.shape[2], hidden_size=64, num_layers=2)
         loader = DataLoader(TensorDataset(X, y), batch_size=32, shuffle=False)
         train_model(model, loader)
         prediction = model(X[-1].unsqueeze(0)).item()
-        predicted_price = scaler.inverse_transform([[prediction] + [0]*6])[0, 0]
+        predicted_price = scaler.inverse_transform([[prediction] + [0]*(X.shape[2]-1)])[0, 0]
         save_prediction(ticker.upper(), predicted_price)
+
+        y_true = y.numpy().flatten()
+        y_pred = model(X).detach().numpy().flatten()
+        acc = compute_directional_accuracy(y_true, y_pred)
+        final = backtest_strategy(y_true, y_pred)
 
         with open(PRED_HISTORY_PATH) as f:
             history = json.load(f)[-5:]
@@ -124,7 +150,9 @@ async def predict_submit(request: Request, ticker: str = Form(...), start: str =
             "ticker": ticker.upper(),
             "history": history,
             "tickers": COMMON_TICKERS,
-            "chart": chart
+            "chart": chart,
+            "accuracy": f"{acc:.2%}",
+            "backtest": f"₹{final:,.2f}"
         })
     except Exception as e:
         logger.error(f"Prediction error: {e}")
@@ -174,6 +202,8 @@ if not html_path.exists():
 
     {% if prediction %}
       <h2>Predicted Price for {{ ticker }}: ₹{{ prediction }}</h2>
+      <h4>📊 Directional Accuracy: {{ accuracy }}</h4>
+      <h4>💰 Backtest Return: {{ backtest }}</h4>
       <div class="chart-wrapper">
         <canvas id="adjCloseChart"></canvas>
       </div>
@@ -210,7 +240,3 @@ if not html_path.exists():
 </body>
 </html>
 """)
-
-# Run the app
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
